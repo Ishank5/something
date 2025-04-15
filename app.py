@@ -87,7 +87,7 @@ def send_fcm_message(fcm_token=None, custom_message=None, custom_title=None, tim
                 payload=messaging.APNSPayload(
                     aps=messaging.Aps(
                         content_available=True,
-                        priority=10
+                        # Remove the priority parameter from Aps
                     )
                 )
             ),
