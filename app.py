@@ -1,10 +1,10 @@
 from flask import Flask, request, jsonify
 import os
 import firebase_admin
-from firebase_admin import credentials, messaging
+from firebase_admin import credentials, messaging, firestore
 import base64
 import json
-import random
+import datetime
 
 app = Flask(__name__)
 
@@ -15,6 +15,9 @@ def initialize_firebase():
         cred_json = base64.b64decode(os.environ["FIREBASE_CRED_JSON"]).decode()
         cred = credentials.Certificate(json.loads(cred_json))
         firebase_admin.initialize_app(cred)
+        # Initialize Firestore
+        global db
+        db = firestore.client()
         return True
     except Exception as e:
         print(f"Firebase initialization failed: {str(e)}")
@@ -24,76 +27,23 @@ def initialize_firebase():
 if not initialize_firebase():
     raise RuntimeError("Failed to initialize Firebase")
 
-# Message templates
-CUTE_MESSAGES = [
-    "Just thinking about you makes me smile. 😊",
-    "You’re the best thing that ever happened to me. 💖",
-    "I don’t need a reason to miss you—I just do. All the time.",
-    "You’re my favorite notification. 📱❤️",
-    "If I had to choose between you and chocolate, I’d choose you… after eating the chocolate. 😘",
-    "You’re like a cozy blanket for my soul.",
-    "I love the way you make ordinary moments feel magical.",
-    "You’re my favorite daydream.",
-    "Life is so much better with you in it.",
-    "I’d rather have a bad day with you than a good day with anyone else.",
-    "You’re my happy place. 🌸",
-    "I don’t just miss you—I miss the way you make me feel.",
-    "You’re the reason I believe in love.",
-    "I could never get tired of loving you.",
-    "My heart does a little dance every time I see your name pop up on my phone. 💃",
-    "You’re the human version of sunshine. ☀️",
-    "I love you more than yesterday, but less than tomorrow.",
-    "You make my heart skip a beat—and not just because you scare me sometimes. 😆",
-    "I don’t need a thousand wishes—I already have you.",
-    "You’re my favorite adventure.",
-    "Being with you feels like coming home.",
-    "I love you more than pizza… and that’s saying a lot. 🍕",
-    "You’re the missing piece to my puzzle.",
-    "Every love song reminds me of you.",
-    "I fall for you more every single day.",
-    "You’re my favorite kind of chaos.",
-    "I love the way you understand me without me having to say a word.",
-    "You’re my favorite person to do nothing with.",
-    "I don’t just love you—I really, really like you.",
-    "You’re the reason I believe in soulmates.",
-    "I could get lost in your eyes forever.",
-    "You’re my favorite thought.",
-    "Loving you is the easiest thing I’ve ever done.",
-    "You make my heart feel full.",
-    "I love the way you laugh at my terrible jokes.",
-    "You’re my favorite distraction.",
-    "I don’t need a genie—I already have everything I want in you.",
-    "You’re my favorite kind of beautiful.",
-    "I love the way you make even the simplest moments special.",
-    "You’re my favorite reason to smile.",
-    "I love you more than coffee… and that’s serious. ☕",
-    "You’re my favorite sound, my favorite sight, my favorite everything.",
-    "I’d choose you over sleep… and I *really* love sleep. 😴❤️",
-    "You make my heart feel like it’s on a trampoline—bouncy and happy.",
-    "I love the way you fit perfectly into my arms.",
-    "You’re my favorite kind of trouble.",
-    "I love you more than words can say… but I’ll keep trying anyway.",
-    "You’re my favorite kind of magic.",
-    "I love the way you make my heart race just by being you.",
-    "No matter what happens, I’ll always choose you—again and again."
-]
+def store_message(message_text, time_window):
+    """Log the message in Firestore."""
+    try:
+        doc_ref = db.collection("love_messages").document()
+        doc_ref.set({
+            "message": message_text,
+            "time_window": time_window,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+            "date": datetime.date.today().isoformat()
+        })
+        return True
+    except Exception as e:
+        print(f"Firestore error: {e}")
+        return False
 
-RANDOM_TITLES = [
-    "💌 A Special Message For You!",
-    "✨ You're Magical!",
-    "🥰 My Heart Skips a Beat",
-    "🌹 Thinking of You",
-    "💖 Love Alert!",
-    "🌟 You Shine Bright",
-    "🤗 Virtual Hug Incoming",
-    "😘 Sending You Kisses",
-    "💕 You're My Favorite",
-    "🌈 My Personal Sunshine"
-]
-
-
-def send_fcm_message(fcm_token=None, custom_message=None, custom_title=None):
-    """Send an FCM message with custom or random content"""
+def send_fcm_message(fcm_token=None, custom_message=None, custom_title=None, time_window=None):
+    """Send an FCM message with custom content and store in Firestore"""
     try:
         # Use provided token or default from environment
         token = fcm_token if fcm_token else os.environ.get("DEFAULT_FCM_TOKEN")
@@ -104,24 +54,53 @@ def send_fcm_message(fcm_token=None, custom_message=None, custom_title=None):
                 "message": "No FCM token provided"
             }
 
-        # Use custom or random message/title
-        title = custom_title if custom_title else random.choice(RANDOM_TITLES)
-        message_body = custom_message if custom_message else random.choice(CUTE_MESSAGES)
+        if not custom_message or not custom_title:
+            return {
+                "success": False,
+                "message": "Message and title are required"
+            }
 
-        # Send FCM
-        response = messaging.send(messaging.Message(
+        # Store message in Firestore
+        store_success = store_message(custom_message, time_window)
+        if not store_success:
+            return {
+                "success": False,
+                "message": "Failed to store message in Firestore"
+            }
+
+        # Send FCM with high priority
+        message = messaging.Message(
             notification=messaging.Notification(
-                title=title,
-                body=message_body
+                title=custom_title,
+                body=custom_message
+            ),
+            android=messaging.AndroidConfig(
+                priority='high',
+                notification=messaging.AndroidNotification(
+                    priority='high'
+                )
+            ),
+            apns=messaging.APNSConfig(
+                headers={
+                    'apns-priority': '10',
+                },
+                payload=messaging.APNSPayload(
+                    aps=messaging.Aps(
+                        content_available=True,
+                        priority=10
+                    )
+                )
             ),
             token=token
-        ))
+        )
+        
+        response = messaging.send(message)
         
         return {
             "success": True,
-            "message": "Message sent successfully",
-            "title": title,
-            "body": message_body,
+            "message": "Message sent and stored successfully",
+            "title": custom_title,
+            "body": custom_message,
             "response": response
         }
     except Exception as e:
@@ -137,22 +116,16 @@ def health_check():
 
 @app.route('/send-message', methods=['POST'])
 def send_message_api():
-    """API endpoint to send a message"""
+    """API endpoint to send a message and store it in Firestore"""
     data = request.get_json() or {}
     
     result = send_fcm_message(
         fcm_token=data.get('fcm_token'),
         custom_message=data.get('message'),
-        custom_title=data.get('title')
+        custom_title=data.get('title'),
+        time_window=data.get('time_window')
     )
     
-    status_code = 200 if result["success"] else 400
-    return jsonify(result), status_code
-
-@app.route('/send-random', methods=['GET'])
-def send_random_message():
-    """Send a random message to default device"""
-    result = send_fcm_message()
     status_code = 200 if result["success"] else 400
     return jsonify(result), status_code
 
