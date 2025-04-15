@@ -4,6 +4,7 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 import base64
 import json
+import random
 
 app = Flask(__name__)
 
